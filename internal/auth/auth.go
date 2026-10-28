@@ -1,6 +1,10 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
@@ -65,4 +69,22 @@ func (t *TokenManager) Parse(tokenString string) (int, error) {
 	}
 
 	return userID, nil
+}
+
+func (t *TokenManager) GenerateRefreshToken() (string, error) {
+	buf := make([]byte, 32)
+	_, err := rand.Read(buf)
+	if err != nil {
+		return "", fmt.Errorf("generate refresh token: %w", err)
+	}
+
+	token := base64.RawURLEncoding.EncodeToString(buf)
+
+	return token, nil
+}
+
+func (t *TokenManager) HashRefreshToken(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	refreshHash := hex.EncodeToString(hash[:])
+	return refreshHash
 }

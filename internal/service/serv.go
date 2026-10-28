@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"pgx-practice/internal/domain"
 	"pgx-practice/internal/storage"
+	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -29,10 +31,13 @@ type Storage interface {
 
 	FindUserByEmail(context.Context, string) (domain.User, error)
 	SaveUser(context.Context, string, string) (domain.User, error)
+	SaveRefreshSession(context.Context, int, string, uuid.UUID, time.Time) (domain.RefreshSession, error)
 }
 
 type TokenManager interface {
 	Generate(int) (string, error)
+	GenerateRefreshToken() (string, error)
+	HashRefreshToken(string) string
 }
 
 type Service struct {
@@ -150,33 +155,49 @@ func (s *Service) CreateUser(ctx context.Context, email string, password string)
 	return user, nil
 }
 
-func (s *Service) LoginUser(ctx context.Context, email string, password string) (string, error) {
+func (s *Service) LoginUser(ctx context.Context, email string, password string) (string, string, error) {
 	if email == "" || len(password) < 8 {
-		return "", fmt.Errorf("invalid credentials: %w", ErrInvalidUser)
+		return "", "", fmt.Errorf("invalid credentials: %w", ErrInvalidUser)
 	}
 
 	user, err := s.repo.FindUserByEmail(ctx, email)
 	if errors.Is(err, storage.ErrUserNotFound) {
-		return "", fmt.Errorf("login user error: %w", ErrInvalidCredentials)
+		return "", "", fmt.Errorf("login user error: %w", ErrInvalidCredentials)
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("login user error: %w", err)
+		return "", "", fmt.Errorf("login user error: %w", err)
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
 	if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
-		return "", fmt.Errorf("login user error: %w", ErrInvalidCredentials)
+		return "", "", fmt.Errorf("login user error: %w", ErrInvalidCredentials)
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("login user: %w", err)
+		return "", "", fmt.Errorf("login user: %w", err)
 	}
 
-	token, err := s.tokenManager.Generate(user.ID)
+	accessToken, err := s.tokenManager.Generate(user.ID)
 	if err != nil {
-		return "", fmt.Errorf("generate access token: %w", err)
+		return "", "", fmt.Errorf("generate access token: %w", err)
 	}
 
-	return token, nil
+	refreshToken, err := s.tokenManager.GenerateRefreshToken()
+	if err != nil {
+		return "", "", fmt.Errorf("generate refresh token: %w", err)
+	}
+
+	hashRefreshToken := s.tokenManager.HashRefreshToken(refreshToken)
+
+	expiresAt := time.Now().Add(24 * 30 * time.Hour)
+
+	familyID := uuid.New()
+
+	_, err = s.repo.SaveRefreshSession(ctx, user.ID, hashRefreshToken, familyID, expiresAt)
+	if err != nil {
+		return "", "", fmt.Errorf("save refresh session: %w", err)
+	}
+
+	return accessToken, refreshToken, nil
 }

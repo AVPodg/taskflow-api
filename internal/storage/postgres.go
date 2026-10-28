@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"pgx-practice/internal/domain"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +23,8 @@ var (
 	ErrNotEnoughStock  = errors.New("stock < amount")
 
 	ErrUserNotFound = errors.New("user not found")
+
+	ErrNotFoundRefreshSession = errors.New("not found refresh session")
 )
 
 type Repository struct {
@@ -186,4 +190,136 @@ func (repo *Repository) FindUserByEmail(ctx context.Context, email string) (doma
 	}
 
 	return user, nil
+}
+
+func (repo *Repository) SaveRefreshSession(ctx context.Context, userID int, tokenHash string, familyID uuid.UUID, expiresAt time.Time) (domain.RefreshSession, error) {
+	query := `INSERT INTO refresh_sessions (user_id, token_hash, family_id, expires_at) VALUES ($1, $2, $3, $4) RETURNING id, user_id, token_hash, family_id, expires_at, revoked_at, created_at`
+
+	var refreshSession domain.RefreshSession
+	err := repo.db.QueryRow(ctx, query, userID, tokenHash, familyID, expiresAt).Scan(
+		&refreshSession.ID,
+		&refreshSession.UserID,
+		&refreshSession.TokenHash,
+		&refreshSession.FamilyID,
+		&refreshSession.ExpiresAt,
+		&refreshSession.RevokedAt,
+		&refreshSession.CreatedAt,
+	)
+
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23505":
+				return domain.RefreshSession{}, fmt.Errorf("save refresh session error: %w", ErrUnique)
+			case "23503":
+				return domain.RefreshSession{}, fmt.Errorf("save resresh session error: %w", ErrForeignKey)
+			}
+		}
+
+		return domain.RefreshSession{}, fmt.Errorf("save refresh session error: %w", err)
+	}
+
+	return refreshSession, nil
+}
+
+func (repo *Repository) FindRefreshSessionByHash(ctx context.Context, tokenHash string) (domain.RefreshSession, error) {
+	query := `SELECT id, user_id, token_hash, family_id, expires_at, revoked_at, created_at FROM refresh_sessions WHERE token_hash = $1`
+
+	var refreshSession domain.RefreshSession
+	err := repo.db.QueryRow(ctx, query, tokenHash).Scan(
+		&refreshSession.ID,
+		&refreshSession.UserID,
+		&refreshSession.TokenHash,
+		&refreshSession.FamilyID,
+		&refreshSession.ExpiresAt,
+		&refreshSession.RevokedAt,
+		&refreshSession.CreatedAt,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.RefreshSession{}, fmt.Errorf("find refresh session by hash error: %w", ErrNotFoundRefreshSession)
+	}
+
+	if err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("find refresh session by hash error: %w", err)
+	}
+
+	return refreshSession, nil
+}
+
+func (repo *Repository) RevokeRefreshSession(ctx context.Context, id int) error {
+	query := `UPDATE refresh_sessions SET revoked_at = NOW() WHERE id = $1`
+
+	tag, err := repo.db.Exec(ctx, query, id)
+	if err != nil {
+		return nil
+	}
+
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+
+	return nil
+}
+
+func (repo *Repository) RotateRefreshSession(ctx context.Context, oldTokenHash string, NewTokenHash string, NewExpiresAt time.Time) (domain.RefreshSession, error) {
+	tx, err := repo.db.Begin(ctx)
+	if err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("begin refresh rotation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var oldRefreshSession domain.RefreshSession
+	err = tx.QueryRow(ctx, `SELECT id, user_id, token_hash, family_id, expires_at, revoked_at, created_at FROM refresh_sessions WHERE token_hash = $1 FOR UPDATE`, oldTokenHash).Scan(
+		&oldRefreshSession.ID,
+		&oldRefreshSession.UserID,
+		&oldRefreshSession.TokenHash,
+		&oldRefreshSession.FamilyID,
+		&oldRefreshSession.ExpiresAt,
+		&oldRefreshSession.RevokedAt,
+		&oldRefreshSession.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	if err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	if oldRefreshSession.RevokedAt != nil {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	if time.Now().After(oldRefreshSession.ExpiresAt) {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	_, err = tx.Exec(ctx, `UPDATE refresh_sessions SET revoked_at = NOW() WHERE id = $1`, oldRefreshSession.ID)
+	if err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	var NewRefreshSession domain.RefreshSession
+	err = tx.QueryRow(ctx, `INSERT INTO refresh_sessions (user_id, token_hash, family_id, expires_at) VALUES ($1, $2, $3, $4) RETURNING id, user_id, token_hash, family_id, expires_at, revoked_at, created_at`,
+		oldRefreshSession.UserID, NewTokenHash, oldRefreshSession.FamilyID, NewExpiresAt).Scan(
+		&NewRefreshSession.ID,
+		&NewRefreshSession.UserID,
+		&NewRefreshSession.TokenHash,
+		&NewRefreshSession.FamilyID,
+		&NewRefreshSession.ExpiresAt,
+		&NewRefreshSession.RevokedAt,
+		&NewRefreshSession.CreatedAt,
+	)
+
+	if err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.RefreshSession{}, fmt.Errorf("")
+	}
+
+	return NewRefreshSession, nil
 }

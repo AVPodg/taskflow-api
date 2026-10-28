@@ -40,7 +40,7 @@ type TaskService interface {
 	UpdateTask(context.Context, int, string, string, int) (domain.Task, error)
 
 	CreateUser(context.Context, string, string) (domain.User, error)
-	LoginUser(context.Context, string, string) (string, error)
+	LoginUser(context.Context, string, string) (string, string, error)
 }
 
 type handler struct {
@@ -384,7 +384,7 @@ func (h *handler) PostLogin(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	token, err := h.service.LoginUser(ctx, u.Email, u.Password)
+	accessToken, refreshToken, err := h.service.LoginUser(ctx, u.Email, u.Password)
 
 	if errors.Is(err, context.DeadlineExceeded) {
 		jsonError(w, http.StatusGatewayTimeout, "request timeout")
@@ -417,10 +417,19 @@ func (h *handler) PostLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   false,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(loginResponse{
-		AccessToken: token,
+		AccessToken: accessToken,
 		TokenType:   "Bearer",
 	})
 }
