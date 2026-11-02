@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig
 	Log      LogConfig
 	JWT      JWTConfig
+	Auth     AuthConfig
 }
 
 type HTTPConfig struct {
@@ -33,6 +34,10 @@ type LogConfig struct {
 type JWTConfig struct {
 	Secret string        `env:"JWT_SECRET,required"`
 	TTL    time.Duration `env:"JWT_TTL" envDefault:"2h"`
+}
+
+type AuthConfig struct {
+	RefreshTTL time.Duration `env:"AUTH_REFRESH_TTL" envDefault:"720h"`
 }
 
 func Load() (Config, error) {
@@ -72,6 +77,10 @@ func Load() (Config, error) {
 
 	if cfg.JWT.TTL <= 0 {
 		return Config{}, fmt.Errorf("JWT_TTL must be greater than zero")
+	}
+
+	if cfg.Auth.RefreshTTL <= 0 {
+		return Config{}, fmt.Errorf("AUTH_REFRESH_TTL must be greater than zero")
 	}
 
 	return cfg, nil

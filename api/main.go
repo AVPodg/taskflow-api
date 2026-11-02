@@ -9,10 +9,8 @@ import (
 	"os/signal"
 	"pgx-practice/internal/auth"
 	"pgx-practice/internal/config"
-	"pgx-practice/internal/handler"
 	"pgx-practice/internal/middleware"
-	"pgx-practice/internal/service"
-	"pgx-practice/internal/storage"
+	"pgx-practice/internal/task"
 	"syscall"
 	"time"
 
@@ -70,23 +68,34 @@ func main() {
 
 	tokenManager := auth.NewTokenManager([]byte(cfg.JWT.Secret), cfg.JWT.TTL)
 
-	repository := storage.NewRepository(pool)
+	taskRepo := task.NewRepository(pool)
 
-	svc := service.NewService(repository, tokenManager)
+	taskService := task.NewService(taskRepo)
 
-	h := handler.NewHandler(svc, cfg.HTTP.Timeout)
+	taskHandler := task.NewHandler(
+		taskService,
+		cfg.HTTP.Timeout,
+	)
+
+	authRepo := auth.NewRepository(pool)
+
+	authService := auth.NewService(authRepo, tokenManager, cfg.Auth.RefreshTTL)
+
+	authHandler := auth.NewHandler(authService, cfg.HTTP.Timeout, cfg.Auth.RefreshTTL)
 
 	mux := http.NewServeMux()
 	httpHandler := middleware.RequestIDMiddleware(middleware.LoggingMiddleware(middleware.RecoveryMiddleware(mux)))
 
-	mux.Handle("POST /tasks", middleware.AuthMiddleware(http.HandlerFunc(h.PostApi), tokenManager))
-	mux.Handle("GET /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(h.GetApiByID), tokenManager))
-	mux.Handle("GET /tasks", middleware.AuthMiddleware(http.HandlerFunc(h.GetApi), tokenManager))
-	mux.Handle("DELETE /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(h.DeleteApi), tokenManager))
-	mux.Handle("PUT /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(h.UpdateApi), tokenManager))
+	mux.Handle("POST /tasks", middleware.AuthMiddleware(http.HandlerFunc(taskHandler.Create), tokenManager))
+	mux.Handle("GET /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(taskHandler.GetByID), tokenManager))
+	mux.Handle("GET /tasks", middleware.AuthMiddleware(http.HandlerFunc(taskHandler.GetAll), tokenManager))
+	mux.Handle("DELETE /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(taskHandler.Delete), tokenManager))
+	mux.Handle("PUT /tasks/{task_id}", middleware.AuthMiddleware(http.HandlerFunc(taskHandler.Update), tokenManager))
 
-	mux.HandleFunc("POST /register", h.PostRegister)
-	mux.HandleFunc("POST /login", h.PostLogin)
+	mux.HandleFunc("POST /register", authHandler.PostRegister)
+	mux.HandleFunc("POST /login", authHandler.PostLogin)
+	mux.HandleFunc("POST /refresh", authHandler.PostRefresh)
+	mux.HandleFunc("POST /logout", authHandler.PostLogout)
 
 	stopCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
